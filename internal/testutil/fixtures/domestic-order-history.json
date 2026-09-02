@@ -1,0 +1,12 @@
+{
+  "rt_cd": "0",
+  "output1": [{
+    "odno": "42",
+    "sll_buy_dvsn_cd": "02",
+    "pdno": "005930",
+    "ord_qty": "001",
+    "ord_unpr": "70000",
+    "ord_dt": "20260901",
+    "ord_tmd": "101010"
+  }]
+}
