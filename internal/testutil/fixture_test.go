@@ -85,7 +85,7 @@ func TestReadFixturesAndBrokerQueries(t *testing.T) {
 func TestRESTErrorFixtureNeverExposesUpstreamMessage(t *testing.T) {
 	x := load(t, "rest-error.json")
 	c := fixtureClient(t, x, func(*http.Request) {})
-	err := c.Read(context.Background(), "/uapi/x", "VTTC8434R", nil, nil)
+	err := c.Read(context.Background(), "/uapi/domestic-stock/v1/trading/inquire-balance", "VTTC8434R", nil, nil)
 	if err == nil || strings.Contains(err.Error(), "upstream-private-detail") || strings.Contains(err.Error(), "fixture-secret") || strings.Contains(err.Error(), "fixture-token") {
 		t.Fatalf("unsafe error=%v", err)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/url"
 )
 
 const PongMessage = 10
@@ -42,11 +41,10 @@ func NewSubscribe(approvalKey, trID, trKey string) Subscribe {
 }
 
 func ValidateWSURL(raw string) (string, error) {
-	u, err := url.Parse(raw)
-	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Scheme != "ws" || (u.Host != "ops.koreainvestment.com:31000" && u.Host != "ops.koreainvestment.com:21000") || (u.Path != "" && u.Path != "/" && u.Path != "/tryitout") {
+	if raw != "ws://ops.koreainvestment.com:31000/tryitout" && raw != "ws://ops.koreainvestment.com:21000/tryitout" {
 		return "", errors.New("kis: WebSocket endpoint is not allowlisted")
 	}
-	return u.String(), nil
+	return raw, nil
 }
 
 type WebSocket struct {

@@ -34,7 +34,12 @@ func (d *fakeDialer) Dial(_ context.Context, endpoint string) (WSConnection, err
 	return d.connection, nil
 }
 func TestWebSocketAuthoritySubscribeAndPingPong(t *testing.T) {
-	for _, endpoint := range []string{"wss://ops.koreainvestment.com:31000", "ws://example.test:31000", "ws://ops.koreainvestment.com:31000/other"} {
+	for _, endpoint := range []string{"ws://ops.koreainvestment.com:31000/tryitout", "ws://ops.koreainvestment.com:21000/tryitout"} {
+		if got, err := ValidateWSURL(endpoint); err != nil || got != endpoint {
+			t.Fatalf("endpoint=%s got=%s err=%v", endpoint, got, err)
+		}
+	}
+	for _, endpoint := range []string{"wss://ops.koreainvestment.com:31000/tryitout", "ws://example.test:31000/tryitout", "ws://ops.koreainvestment.com:31000", "ws://ops.koreainvestment.com:31000/", "ws://ops.koreainvestment.com:31000/tryitout?", "ws://ops.koreainvestment.com:31000/tryitout?x=1", "ws://ops.koreainvestment.com:31000/tryitout#", "ws://user@ops.koreainvestment.com:31000/tryitout", "ws://ops.koreainvestment.com:9999/tryitout"} {
 		if _, err := ValidateWSURL(endpoint); err == nil {
 			t.Fatalf("accepted %s", endpoint)
 		}

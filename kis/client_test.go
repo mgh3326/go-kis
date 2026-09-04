@@ -27,7 +27,7 @@ func clientWith(t *testing.T, host string, rt http.RoundTripper, clock Clock) *C
 }
 
 func TestRESTHostAllowlistAndHTTPS(t *testing.T) {
-	for _, host := range []string{"", "http://openapivts.koreainvestment.com:29443", "https://openapivts.koreainvestment.com", "https://openapivts.koreainvestment.com:29443/x", "https://user@openapivts.koreainvestment.com:29443", "https://openapivts.koreainvestment.com:29443?q=1", "https://openapi.koreainvestment.com:9444"} {
+	for _, host := range []string{"", "http://openapivts.koreainvestment.com:29443", "https://openapivts.koreainvestment.com", "https://openapivts.koreainvestment.com:29443/x", "https://user@openapivts.koreainvestment.com:29443", "https://openapivts.koreainvestment.com:29443?q=1", HostVTS + "?", HostVTS + "#", "https://openapi.koreainvestment.com:9444"} {
 		if _, err := NewClient(Config{Host: host, AppKey: "a", AppSecret: "b", RequestTimeout: time.Second}); err == nil {
 			t.Fatalf("accepted %q", host)
 		}
@@ -47,7 +47,7 @@ func TestFinalTransportPinAndReadOnlyMethod(t *testing.T) {
 		}
 		return response(200, `{"rt_cd":"0","msg_cd":"MCA00000","msg1":"ok","output":{}}`), nil
 	}), nil)
-	if err := c.Read(context.Background(), "/uapi/x", "VTTC8434R", nil, nil); err != nil {
+	if err := c.Read(context.Background(), "/uapi/domestic-stock/v1/trading/inquire-balance", "VTTC8434R", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !called {
@@ -70,14 +70,58 @@ func TestTransportDisablesAmbientProxy(t *testing.T) {
 }
 func TestRedirectAndSafeEnvelopeErrors(t *testing.T) {
 	c := clientWith(t, HostVTS, roundTripFunc(func(*http.Request) (*http.Response, error) { return response(302, ""), nil }), nil)
-	if err := c.Read(context.Background(), "/x", "VTTC8434R", nil, nil); !errors.Is(err, ErrRedirectBlocked) {
+	if err := c.Read(context.Background(), "/uapi/domestic-stock/v1/trading/inquire-balance", "VTTC8434R", nil, nil); !errors.Is(err, ErrRedirectBlocked) {
 		t.Fatalf("redirect=%v", err)
 	}
 	for _, raw := range []string{`{}`, `{"rt_cd":0}`, `{"rt_cd":"1","msg_cd":"E","msg1":"fixture-secret fixture-token raw-payload"}`} {
 		c = clientWith(t, HostVTS, roundTripFunc(func(*http.Request) (*http.Response, error) { return response(200, raw), nil }), nil)
-		err := c.Read(context.Background(), "/x", "VTTC8434R", nil, nil)
+		err := c.Read(context.Background(), "/uapi/domestic-stock/v1/trading/inquire-balance", "VTTC8434R", nil, nil)
 		if err == nil || strings.Contains(err.Error(), "fixture-secret") || strings.Contains(err.Error(), "raw-payload") {
 			t.Fatalf("unsafe err=%v", err)
+		}
+	}
+}
+
+func TestReadAllowlistRejectsMutationLikeInputsBeforeTransport(t *testing.T) {
+	called := false
+	f := &fakeClock{now: time.Unix(0, 0), started: make(chan struct{}, 1)}
+	c := clientWith(t, HostLive, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return response(200, `{"rt_cd":"0"}`), nil
+	}), f)
+	for _, request := range []struct{ path, trID string }{
+		{"/uapi/domestic-stock/v1/trading/order-cash", "TTTC0012U"},
+		{"/uapi/domestic-stock/v1/trading/inquire-balance", "TTTC0012U"},
+		{"/uapi/domestic-stock/v1/trading/inquire-balance", "not-a-read"},
+	} {
+		if err := c.Read(context.Background(), request.path, request.trID, nil, nil); err == nil {
+			t.Fatalf("path=%s tr=%s err=%v", request.path, request.trID, err)
+		}
+	}
+	if called || len(f.waits) != 0 {
+		t.Fatalf("rejected read reached safety boundary: called=%v waits=%v", called, f.waits)
+	}
+}
+
+func TestAPIErrorNeverContainsUntrustedMessageCode(t *testing.T) {
+	secretLike := "fixture-secret"
+	for _, test := range []struct {
+		status int
+		body   string
+		header string
+	}{
+		{http.StatusOK, `{"rt_cd":"1","msg_cd":"fixture-secret","msg1":"ignored"}`, ""},
+		{http.StatusBadRequest, `{"rt_cd":"1","msg_cd":"ignored","msg1":"ignored"}`, secretLike},
+	} {
+		c := clientWith(t, HostLive, roundTripFunc(func(*http.Request) (*http.Response, error) {
+			resp := response(test.status, test.body)
+			resp.Header.Set("msg_cd", test.header)
+			return resp, nil
+		}), nil)
+		err := c.Read(context.Background(), "/uapi/domestic-stock/v1/trading/inquire-balance", "VTTC8434R", nil, nil)
+		apiErr, ok := err.(*APIError)
+		if !ok || strings.Contains(apiErr.Code, secretLike) || strings.Contains(apiErr.Message, secretLike) || strings.Contains(err.Error(), secretLike) {
+			t.Fatalf("untrusted code leaked: err=%#v", err)
 		}
 	}
 }
@@ -143,12 +187,14 @@ func TestRESTLimiterIsApplied(t *testing.T) {
 		sent <- struct{}{}
 		return response(200, `{"rt_cd":"0","msg_cd":"MCA00000","msg1":"ok"}`), nil
 	}), f)
-	if err := c.Read(context.Background(), "/first", "VTTC8434R", nil, nil); err != nil {
+	if err := c.Read(context.Background(), "/uapi/domestic-stock/v1/trading/inquire-balance", "VTTC8434R", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	<-sent
 	done := make(chan error, 1)
-	go func() { done <- c.Read(context.Background(), "/second", "VTTC8434R", nil, nil) }()
+	go func() {
+		done <- c.Read(context.Background(), "/uapi/domestic-stock/v1/trading/inquire-balance", "VTTC8434R", nil, nil)
+	}()
 	select {
 	case <-sent:
 		t.Fatal("second REST send bypassed limiter")
@@ -157,6 +203,52 @@ func TestRESTLimiterIsApplied(t *testing.T) {
 	f.Advance(50 * time.Millisecond)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestUncachedReadSpacesOAuthAndReadTransmissions(t *testing.T) {
+	f := &fakeClock{now: time.Unix(0, 0), started: make(chan struct{}, 2)}
+	type sentRequest struct {
+		path string
+		at   time.Time
+	}
+	sent := make(chan sentRequest, 2)
+	c, err := NewClient(Config{Host: HostLive, AppKey: "fixture-appkey", AppSecret: "fixture-secret", RequestTimeout: time.Second, Clock: f, HTTPClient: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		entry := sentRequest{path: r.URL.Path, at: f.Now()}
+		sent <- entry
+		if r.URL.Path == "/oauth2/tokenP" {
+			return response(200, `{"access_token":"fixture-token","token_type":"Bearer","expires_in":3600,"access_token_token_expired":"2099"}`), nil
+		}
+		return response(200, `{"rt_cd":"0","msg_cd":"MCA00000","msg1":"ok"}`), nil
+	})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Read(context.Background(), "/uapi/domestic-stock/v1/trading/inquire-balance", "VTTC8434R", nil, nil)
+	}()
+	var first sentRequest
+	select {
+	case first = <-sent:
+	case <-f.started:
+		t.Fatal("OAuth issuance was rate-limited behind an outer read reservation")
+	}
+	if first.path != "/oauth2/tokenP" {
+		t.Fatalf("first send=%s", first.path)
+	}
+	select {
+	case next := <-sent:
+		t.Fatalf("read bypassed limiter: %s", next.path)
+	case <-f.started:
+	}
+	f.Advance(50 * time.Millisecond)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	second := <-sent
+	if second.path != "/uapi/domestic-stock/v1/trading/inquire-balance" || second.at.Sub(first.at) != 50*time.Millisecond {
+		t.Fatalf("transmissions=%+v then %+v", first, second)
 	}
 }
 func TestTokenLifecycleReuseRefreshFailureAndConcurrency(t *testing.T) {

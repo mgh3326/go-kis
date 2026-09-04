@@ -114,6 +114,9 @@ func normalizeHost(raw string) (string, error) {
 	if strings.TrimSpace(raw) == "" {
 		return "", ErrHostRequired
 	}
+	if strings.ContainsAny(raw, "?#") {
+		return "", errors.New("kis: invalid REST host")
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return "", errors.New("kis: invalid REST host")
