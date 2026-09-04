@@ -104,16 +104,24 @@ func NewClient(config Config) (*Client, error) {
 // proxy use is independently removed from the clone below.
 func safeTransport(client *http.Client) (http.RoundTripper, error) {
 	var base http.RoundTripper
-	callerSupplied := false
 	if client != nil {
 		base = client.Transport
-		callerSupplied = base != nil
 	}
 	if base == nil {
-		base = http.DefaultTransport
+		defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {
+			return &http.Transport{}, nil
+		}
+		clone := defaultTransport.Clone()
+		clone.Proxy = nil
+		clone.TLSNextProto = nil // never retain a process-global TLS protocol hook.
+		if unsafeStandardTransport(clone) {
+			return nil, ErrUnsafeTransport
+		}
+		return clone, nil
 	}
 	if transport, ok := base.(*http.Transport); ok {
-		if callerSupplied && unsafeStandardTransport(transport) {
+		if unsafeStandardTransport(transport) {
 			return nil, ErrUnsafeTransport
 		}
 		clone := transport.Clone()
@@ -131,7 +139,7 @@ func unsafeStandardTransport(transport *http.Transport) bool {
 	if config == nil {
 		return false
 	}
-	return config.InsecureSkipVerify || config.VerifyPeerCertificate != nil || config.VerifyConnection != nil || config.Time != nil || config.GetCertificate != nil || config.GetClientCertificate != nil || config.GetConfigForClient != nil || config.Renegotiation != tls.RenegotiateNever || config.KeyLogWriter != nil || config.Rand != nil || config.WrapSession != nil || config.UnwrapSession != nil || config.EncryptedClientHelloRejectionVerify != nil || config.GetEncryptedClientHelloKeys != nil || (config.MinVersion != 0 && config.MinVersion < tls.VersionTLS12) || (config.MaxVersion != 0 && config.MaxVersion < tls.VersionTLS12)
+	return config.InsecureSkipVerify || config.VerifyPeerCertificate != nil || config.VerifyConnection != nil || config.Time != nil || config.GetCertificate != nil || config.GetClientCertificate != nil || config.GetConfigForClient != nil || config.ClientSessionCache != nil || config.Renegotiation != tls.RenegotiateNever || config.KeyLogWriter != nil || config.Rand != nil || config.WrapSession != nil || config.UnwrapSession != nil || config.EncryptedClientHelloRejectionVerify != nil || config.GetEncryptedClientHelloKeys != nil || (config.MinVersion != 0 && config.MinVersion < tls.VersionTLS12) || (config.MaxVersion != 0 && config.MaxVersion < tls.VersionTLS12)
 }
 
 func normalizeHost(raw string) (string, error) {

@@ -145,6 +145,25 @@ func TestR5TLSPropertyPolicy(t *testing.T) {
 	}
 }
 
+func TestR6ImplicitDefaultTransportIsInspectedAndIsolated(t *testing.T) {
+	defaultTransport := http.DefaultTransport.(*http.Transport)
+	originalTLS := defaultTransport.TLSClientConfig
+	defaultTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	t.Cleanup(func() { defaultTransport.TLSClientConfig = originalTLS })
+	_, err := NewClient(Config{Host: HostLive, AppKey: "fixture-appkey", AppSecret: "fixture-secret", RequestTimeout: time.Second})
+	if !errors.Is(err, ErrUnsafeTransport) {
+		t.Fatalf("implicit unsafe global default accepted: %v", err)
+	}
+}
+
+func TestR6RejectsClientSessionCacheBeforeDial(t *testing.T) {
+	cache := tls.NewLRUClientSessionCache(1)
+	_, err := NewClient(Config{Host: HostLive, AppKey: "fixture-appkey", AppSecret: "fixture-secret", RequestTimeout: time.Second, HTTPClient: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{ClientSessionCache: cache}}}})
+	if !errors.Is(err, ErrUnsafeTransport) {
+		t.Fatalf("ClientSessionCache accepted: %v", err)
+	}
+}
+
 func TestR5DecodeErrorDoesNotExposeResponseValue(t *testing.T) {
 	secretLike := "credential-shaped-sentinel"
 	var output struct {
