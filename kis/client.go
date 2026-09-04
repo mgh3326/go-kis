@@ -4,6 +4,7 @@ package kis
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
@@ -123,15 +124,18 @@ func safeTransport(client *http.Client) (http.RoundTripper, error) {
 }
 
 func unsafeStandardTransport(transport *http.Transport) bool {
-	if transport.Dial != nil || transport.DialContext != nil || transport.DialTLS != nil || transport.DialTLSContext != nil || transport.TLSNextProto != nil {
-		return transport != http.DefaultTransport
+	if transport.DialTLS != nil || transport.DialTLSContext != nil || transport.TLSNextProto != nil {
+		return true
 	}
 	config := transport.TLSClientConfig
-	return config != nil && (config.InsecureSkipVerify || config.ServerName != "" || config.RootCAs != nil || config.VerifyPeerCertificate != nil || config.VerifyConnection != nil)
+	if config == nil {
+		return false
+	}
+	return config.InsecureSkipVerify || config.VerifyPeerCertificate != nil || config.VerifyConnection != nil || config.Time != nil || config.GetCertificate != nil || config.GetClientCertificate != nil || config.GetConfigForClient != nil || config.Renegotiation != tls.RenegotiateNever || config.KeyLogWriter != nil || config.Rand != nil || config.WrapSession != nil || config.UnwrapSession != nil || config.EncryptedClientHelloRejectionVerify != nil || config.GetEncryptedClientHelloKeys != nil || (config.MinVersion != 0 && config.MinVersion < tls.VersionTLS12) || (config.MaxVersion != 0 && config.MaxVersion < tls.VersionTLS12)
 }
 
 func normalizeHost(raw string) (string, error) {
-	if strings.TrimSpace(raw) == "" {
+	if strings.TrimSpace(raw) == "" || strings.TrimSpace(raw) != raw || strings.ContainsAny(raw, "\r\n\t\\") {
 		return "", ErrHostRequired
 	}
 	if strings.ContainsAny(raw, "?#") {
@@ -141,14 +145,17 @@ func normalizeHost(raw string) (string, error) {
 	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return "", errors.New("kis: invalid REST host")
 	}
-	if u.Scheme != "https" {
+	if !strings.EqualFold(u.Scheme, "https") {
 		return "", errors.New("kis: REST must use HTTPS")
 	}
-	if u.Host != "openapivts.koreainvestment.com:29443" && u.Host != "openapi.koreainvestment.com:9443" {
+	hostname, port := strings.ToLower(u.Hostname()), u.Port()
+	if (hostname != "openapivts.koreainvestment.com" || port != "29443") && (hostname != "openapi.koreainvestment.com" || port != "9443") {
 		return "", errors.New("kis: REST host is not allowlisted")
 	}
-	u.Path, u.RawPath = "", ""
-	return u.String(), nil
+	if hostname == "openapivts.koreainvestment.com" {
+		return HostVTS, nil
+	}
+	return HostLive, nil
 }
 
 type pinningTransport struct{ base http.RoundTripper }

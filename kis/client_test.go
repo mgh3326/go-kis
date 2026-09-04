@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -30,7 +31,7 @@ func clientWith(t *testing.T, host string, rt http.RoundTripper, clock Clock) *C
 }
 
 func TestRESTHostAllowlistAndHTTPS(t *testing.T) {
-	for _, host := range []string{"", "http://openapivts.koreainvestment.com:29443", "https://openapivts.koreainvestment.com", "https://openapivts.koreainvestment.com:29443/x", "https://user@openapivts.koreainvestment.com:29443", "https://openapivts.koreainvestment.com:29443?q=1", HostVTS + "?", HostVTS + "#", "https://openapi.koreainvestment.com:9444"} {
+	for _, host := range []string{"", "http://openapivts.koreainvestment.com:29443", "https://openapivts.koreainvestment.com", "https://openapivts.koreainvestment.com:29443/x", "https://openapivts.koreainvestment.com:29443//", "https://openapivts.koreainvestment.com:29443/%2e", "https://openapivts.koreainvestment.com:29443\\x", "https://openapivts.koreainvestment.com.:29443", "https://user@openapivts.koreainvestment.com:29443", "https://openapivts.koreainvestment.com:29443?q=1", HostVTS + "?", HostVTS + "#", "https://openapi.koreainvestment.com:9444"} {
 		if _, err := NewClient(Config{Host: host, AppKey: "a", AppSecret: "b", RequestTimeout: time.Second}); err == nil {
 			t.Fatalf("accepted %q", host)
 		}
@@ -39,6 +40,12 @@ func TestRESTHostAllowlistAndHTTPS(t *testing.T) {
 		if _, err := NewClient(Config{Host: host, AppKey: "a", AppSecret: "b", RequestTimeout: time.Second}); err != nil {
 			t.Fatalf("host=%s err=%v", host, err)
 		}
+	}
+}
+
+func TestR5SemanticHTTPSOrigin(t *testing.T) {
+	if _, err := NewClient(Config{Host: "HTTPS://OPENAPIVTS.KOREAINVESTMENT.COM:29443", AppKey: "a", AppSecret: "b", RequestTimeout: time.Second}); err != nil {
+		t.Fatalf("uppercase semantic KIS origin rejected: %v", err)
 	}
 }
 func TestFinalTransportPinAndReadOnlyMethod(t *testing.T) {
@@ -87,11 +94,11 @@ func TestRejectUnsafeStandardTransport(t *testing.T) {
 		unsafe    bool
 	}{
 		{"insecure skip verify", &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, true},
-		{"server name override", &http.Transport{TLSClientConfig: &tls.Config{ServerName: "other.invalid"}}, true},
-		{"custom roots", &http.Transport{TLSClientConfig: &tls.Config{RootCAs: x509.NewCertPool()}}, true},
+		{"server name override", &http.Transport{TLSClientConfig: &tls.Config{ServerName: "other.invalid"}}, false},
+		{"custom roots", &http.Transport{TLSClientConfig: &tls.Config{RootCAs: x509.NewCertPool()}}, false},
 		{"verify peer callback", &http.Transport{TLSClientConfig: &tls.Config{VerifyPeerCertificate: func([][]byte, [][]*x509.Certificate) error { return nil }}}, true},
 		{"verify connection callback", &http.Transport{TLSClientConfig: &tls.Config{VerifyConnection: func(tls.ConnectionState) error { return nil }}}, true},
-		{"custom dial", &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) { return nil, nil }}, true},
+		{"custom TCP dial", &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) { return nil, nil }}, false},
 		{"custom tls dial", &http.Transport{DialTLSContext: func(context.Context, string, string) (net.Conn, error) { return nil, nil }}, true},
 		{"custom tls protocol", &http.Transport{TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{}}, true},
 		{"ordinary transport", &http.Transport{}, false},
@@ -107,6 +114,50 @@ func TestRejectUnsafeStandardTransport(t *testing.T) {
 				t.Fatalf("safe transport err=%v", err)
 			}
 		})
+	}
+}
+
+func TestR5TLSPropertyPolicy(t *testing.T) {
+	defaultTransport := http.DefaultTransport.(*http.Transport)
+	safeDefaultClone := defaultTransport.Clone()
+	originalTLS := defaultTransport.TLSClientConfig
+	defaultTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	t.Cleanup(func() { defaultTransport.TLSClientConfig = originalTLS })
+	config := func(transport http.RoundTripper) Config {
+		return Config{Host: HostLive, AppKey: "fixture-appkey", AppSecret: "fixture-secret", RequestTimeout: time.Second, HTTPClient: &http.Client{Transport: transport}}
+	}
+	if _, err := NewClient(config(defaultTransport)); !errors.Is(err, ErrUnsafeTransport) {
+		t.Fatalf("mutated global default accepted: %v", err)
+	}
+	if _, err := NewClient(config(safeDefaultClone)); err != nil {
+		t.Fatalf("safe default clone rejected: %v", err)
+	}
+	if _, err := NewClient(config(&http.Transport{TLSClientConfig: &tls.Config{Time: time.Now}})); !errors.Is(err, ErrUnsafeTransport) {
+		t.Fatalf("TLS Time callback accepted: %v", err)
+	}
+	for _, transport := range []http.RoundTripper{
+		&http.Transport{TLSClientConfig: &tls.Config{RootCAs: x509.NewCertPool(), ServerName: "example.test", MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS13}},
+		&http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13}},
+	} {
+		if _, err := NewClient(config(transport)); err != nil {
+			t.Fatalf("permitted TLS properties rejected: %v", err)
+		}
+	}
+}
+
+func TestR5DecodeErrorDoesNotExposeResponseValue(t *testing.T) {
+	secretLike := "credential-shaped-sentinel"
+	var output struct {
+		Output []struct {
+			When time.Time `json:"when"`
+		} `json:"output"`
+	}
+	c := clientWith(t, HostLive, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(http.StatusOK, `{"rt_cd":"0","msg_cd":"MCA00000","msg1":"ok","output":[{"when":"credential-shaped-sentinel"}]}`), nil
+	}), nil)
+	err := c.Read(context.Background(), "/uapi/domestic-stock/v1/trading/inquire-balance", "VTTC8434R", nil, &output)
+	if err == nil || !errors.Is(err, ErrDecodeResponse) || strings.Contains(fmt.Sprint(err), secretLike) || strings.Contains(fmt.Sprintf("%+v", err), secretLike) {
+		t.Fatalf("unsafe decode error: %v", err)
 	}
 }
 func TestRedirectAndSafeEnvelopeErrors(t *testing.T) {

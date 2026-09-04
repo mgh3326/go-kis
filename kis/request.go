@@ -13,6 +13,17 @@ import (
 const responseLimit = 2 << 20
 
 var ErrReadNotAllowed = errors.New("kis: read endpoint is not supported")
+var ErrDecodeResponse = errors.New("kis: response decode failed")
+
+type DecodeError struct {
+	BodyBytes  int
+	JSONOffset int64
+}
+
+func (e *DecodeError) Error() string {
+	return fmt.Sprintf("kis: response decode failed (bytes=%d, offset=%d)", e.BodyBytes, e.JSONOffset)
+}
+func (e *DecodeError) Unwrap() error { return ErrDecodeResponse }
 
 var supportedReads = map[string]map[string]struct{}{
 	"/uapi/domestic-stock/v1/trading/inquire-balance": {
@@ -123,8 +134,21 @@ func (c *Client) send(ctx context.Context, method, path, trID string, query map[
 	}
 	if output != nil && len(bytes.TrimSpace(raw)) > 0 {
 		if err := json.Unmarshal(raw, output); err != nil {
-			return fmt.Errorf("kis: decode response: %w", err)
+			return decodeError(len(raw), err)
 		}
 	}
 	return nil
+}
+
+func decodeError(bodyBytes int, err error) error {
+	var syntax *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	offset := int64(0)
+	if errors.As(err, &syntax) {
+		offset = syntax.Offset
+	}
+	if errors.As(err, &typeErr) {
+		offset = typeErr.Offset
+	}
+	return &DecodeError{BodyBytes: bodyBytes, JSONOffset: offset}
 }
