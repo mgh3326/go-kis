@@ -2,13 +2,20 @@ package kis
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	cryptorand "crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -161,6 +168,97 @@ func TestR6RejectsClientSessionCacheBeforeDial(t *testing.T) {
 	_, err := NewClient(Config{Host: HostLive, AppKey: "fixture-appkey", AppSecret: "fixture-secret", RequestTimeout: time.Second, HTTPClient: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{ClientSessionCache: cache}}}})
 	if !errors.Is(err, ErrUnsafeTransport) {
 		t.Fatalf("ClientSessionCache accepted: %v", err)
+	}
+}
+
+func TestR7RootCAPoolIsClientOwned(t *testing.T) {
+	callerPool := x509.NewCertPool()
+	c, err := NewClient(Config{Host: HostLive, AppKey: "fixture-appkey", AppSecret: "fixture-secret", RequestTimeout: time.Second, HTTPClient: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: callerPool}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := c.httpClient.Transport.(pinningTransport).base.(*http.Transport).TLSClientConfig.RootCAs
+	if owned == callerPool {
+		t.Fatal("client retained caller RootCAs by reference")
+	}
+	if len(owned.Subjects()) != 0 {
+		t.Fatalf("unexpected initial owned roots: %d", len(owned.Subjects()))
+	}
+	if ok := callerPool.AppendCertsFromPEM(ephemeralCAPEM(t)); !ok {
+		t.Fatal("failed to add ephemeral caller CA")
+	}
+	if len(callerPool.Subjects()) == 0 || len(owned.Subjects()) != 0 {
+		t.Fatalf("caller CA mutation changed client trust: caller=%d owned=%d", len(callerPool.Subjects()), len(owned.Subjects()))
+	}
+}
+
+func TestR7ImplicitRootCAPoolIsClientOwned(t *testing.T) {
+	defaultTransport := http.DefaultTransport.(*http.Transport)
+	originalTLS := defaultTransport.TLSClientConfig
+	callerPool := x509.NewCertPool()
+	defaultTransport.TLSClientConfig = &tls.Config{RootCAs: callerPool}
+	t.Cleanup(func() { defaultTransport.TLSClientConfig = originalTLS })
+	c, err := NewClient(Config{Host: HostLive, AppKey: "fixture-appkey", AppSecret: "fixture-secret", RequestTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owned := c.httpClient.Transport.(pinningTransport).base.(*http.Transport).TLSClientConfig.RootCAs
+	if owned == callerPool {
+		t.Fatal("client retained global RootCAs by reference")
+	}
+	if ok := callerPool.AppendCertsFromPEM(ephemeralCAPEM(t)); !ok {
+		t.Fatal("failed to add ephemeral global CA")
+	}
+	if len(owned.Subjects()) != 0 {
+		t.Fatalf("global CA mutation changed client trust: owned=%d", len(owned.Subjects()))
+	}
+}
+
+func ephemeralCAPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := x509.CreateCertificate(cryptorand.Reader, &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "local-test-ca"}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}, &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "local-test-ca"}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate})
+}
+
+func TestR7TransportFailuresAreClassifiedAndRedacted(t *testing.T) {
+	const sentinel = "transport-raw-sentinel"
+	tests := []struct {
+		name     string
+		err      error
+		category string
+	}{
+		{"timeout", context.DeadlineExceeded, "timeout"},
+		{"dns", &net.DNSError{Name: sentinel, Err: sentinel}, "dns"},
+		{"tls", x509.UnknownAuthorityError{Cert: &x509.Certificate{}}, "tls"},
+		{"connection", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New(sentinel)}, "connection"},
+		{"other wrapped URL", &url.Error{Op: "Get", URL: "https://user-info@host.invalid/path?query=" + sentinel, Err: errors.New(sentinel)}, "other"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := clientWith(t, HostLive, roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, test.err }), nil)
+			err := c.Read(context.Background(), "/uapi/domestic-stock/v1/trading/inquire-balance", "VTTC8434R", map[string]string{"query": sentinel}, nil)
+			transportErr, ok := err.(*TransportError)
+			if !ok || transportErr.Category != test.category || !errors.Is(err, ErrTransportFailure) {
+				t.Fatalf("transport error=%#v", err)
+			}
+			if transportErr.Location != HostLive+"/uapi/domestic-stock/v1/trading/inquire-balance" {
+				t.Fatalf("unsafe request location=%q", transportErr.Location)
+			}
+			for value := err; value != nil; value = errors.Unwrap(value) {
+				for _, rendered := range []string{value.Error(), fmt.Sprintf("%v", value), fmt.Sprintf("%+v", value), fmt.Sprintf("%#v", value)} {
+					if strings.Contains(rendered, sentinel) || strings.Contains(rendered, "user-info") || strings.Contains(rendered, "query=") {
+						t.Fatalf("transport detail leaked: %q", rendered)
+					}
+				}
+			}
+		})
 	}
 }
 

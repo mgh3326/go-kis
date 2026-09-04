@@ -112,23 +112,36 @@ func safeTransport(client *http.Client) (http.RoundTripper, error) {
 		if !ok {
 			return &http.Transport{}, nil
 		}
-		clone := defaultTransport.Clone()
-		clone.Proxy = nil
-		clone.TLSNextProto = nil // never retain a process-global TLS protocol hook.
-		if unsafeStandardTransport(clone) {
-			return nil, ErrUnsafeTransport
-		}
-		return clone, nil
+		// Clone before inspection so an implicit client never retains the mutable
+		// process-global transport. TLSNextProto is cleared because it is a global
+		// protocol hook rather than an application-selected transport property.
+		return ownedStandardTransport(defaultTransport, true)
 	}
 	if transport, ok := base.(*http.Transport); ok {
-		if unsafeStandardTransport(transport) {
-			return nil, ErrUnsafeTransport
-		}
-		clone := transport.Clone()
-		clone.Proxy = nil // credentials must never use an ambient proxy.
-		return clone, nil
+		return ownedStandardTransport(transport, false)
 	}
 	return base, nil
+}
+
+func ownedStandardTransport(source *http.Transport, implicit bool) (*http.Transport, error) {
+	if !implicit && unsafeStandardTransport(source) {
+		return nil, ErrUnsafeTransport
+	}
+	clone := source.Clone()
+	clone.Proxy = nil // credentials must never use an ambient proxy.
+	if implicit {
+		clone.TLSNextProto = nil
+	}
+	if clone.TLSClientConfig != nil && clone.TLSClientConfig.RootCAs != nil {
+		// tls.Config.Clone intentionally retains CertPool references. A client must
+		// own the permitted custom roots so later caller/global pool mutation cannot
+		// change its trust decisions.
+		clone.TLSClientConfig.RootCAs = clone.TLSClientConfig.RootCAs.Clone()
+	}
+	if unsafeStandardTransport(clone) {
+		return nil, ErrUnsafeTransport
+	}
+	return clone, nil
 }
 
 func unsafeStandardTransport(transport *http.Transport) bool {

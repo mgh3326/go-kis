@@ -3,10 +3,12 @@ package kis
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 )
 
@@ -14,6 +16,19 @@ const responseLimit = 2 << 20
 
 var ErrReadNotAllowed = errors.New("kis: read endpoint is not supported")
 var ErrDecodeResponse = errors.New("kis: response decode failed")
+var ErrTransportFailure = errors.New("kis: transport request failed")
+
+// TransportError contains only a fixed category and a canonical controlled URL.
+// It intentionally never retains an upstream transport error.
+type TransportError struct {
+	Category string
+	Location string
+}
+
+func (e *TransportError) Error() string {
+	return fmt.Sprintf("kis: transport failure (category=%s, location=%s)", e.Category, e.Location)
+}
+func (e *TransportError) Unwrap() error { return ErrTransportFailure }
 
 type DecodeError struct {
 	BodyBytes  int
@@ -106,7 +121,7 @@ func (c *Client) send(ctx context.Context, method, path, trID string, query map[
 		if errors.Is(err, ErrRedirectBlocked) {
 			return ErrRedirectBlocked
 		}
-		return fmt.Errorf("kis: request failed: %w", err)
+		return c.transportError(req, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
@@ -138,6 +153,41 @@ func (c *Client) send(ctx context.Context, method, path, trID string, query map[
 		}
 	}
 	return nil
+}
+
+func (c *Client) transportError(req *http.Request, err error) error {
+	path := req.URL.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	// c.host is canonicalized at construction; neither the request query nor any
+	// url.Error text is permitted to become part of the public location.
+	return &TransportError{Category: classifyTransportFailure(err), Location: c.host + path}
+}
+
+func classifyTransportFailure(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var dnsError *net.DNSError
+	if errors.As(err, &dnsError) {
+		return "dns"
+	}
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var certificateInvalid x509.CertificateInvalidError
+	if errors.As(err, &unknownAuthority) || errors.As(err, &hostname) || errors.As(err, &certificateInvalid) {
+		return "tls"
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return "timeout"
+	}
+	var operation *net.OpError
+	if errors.As(err, &operation) {
+		return "connection"
+	}
+	return "other"
 }
 
 func decodeError(bodyBytes int, err error) error {
