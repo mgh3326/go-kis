@@ -23,6 +23,7 @@ var (
 	ErrTimeoutRequired = errors.New("kis: request timeout is required")
 	ErrRedirectBlocked = errors.New("kis: redirect blocked")
 	ErrTransportPinned = errors.New("kis: request target is not an approved KIS REST host")
+	ErrUnsafeTransport = errors.New("kis: caller HTTP transport weakens TLS or authority verification")
 )
 
 // TokenProvider permits applications with their own token cache to supply a token.
@@ -85,7 +86,10 @@ func NewClient(config Config) (*Client, error) {
 	if clock == nil {
 		clock = realClock{}
 	}
-	transport := safeTransport(config.HTTPClient)
+	transport, err := safeTransport(config.HTTPClient)
+	if err != nil {
+		return nil, err
+	}
 	copy := http.Client{Timeout: timeout, Transport: pinningTransport{base: transport}, CheckRedirect: func(*http.Request, []*http.Request) error { return ErrRedirectBlocked }}
 	interval := 50 * time.Millisecond
 	if host == HostVTS {
@@ -94,20 +98,36 @@ func NewClient(config Config) (*Client, error) {
 	return &Client{host: host, appKey: config.AppKey, appSecret: config.AppSecret, httpClient: &copy, timeout: timeout, tokens: config.TokenProvider, clock: clock, limiter: &limiter{clock: clock, interval: interval}}, nil
 }
 
-func safeTransport(client *http.Client) http.RoundTripper {
+// safeTransport accepts fake RoundTrippers for offline tests. A caller-supplied
+// standard transport must retain ordinary TLS peer and hostname verification;
+// proxy use is independently removed from the clone below.
+func safeTransport(client *http.Client) (http.RoundTripper, error) {
 	var base http.RoundTripper
+	callerSupplied := false
 	if client != nil {
 		base = client.Transport
+		callerSupplied = base != nil
 	}
 	if base == nil {
 		base = http.DefaultTransport
 	}
 	if transport, ok := base.(*http.Transport); ok {
+		if callerSupplied && unsafeStandardTransport(transport) {
+			return nil, ErrUnsafeTransport
+		}
 		clone := transport.Clone()
 		clone.Proxy = nil // credentials must never use an ambient proxy.
-		return clone
+		return clone, nil
 	}
-	return base
+	return base, nil
+}
+
+func unsafeStandardTransport(transport *http.Transport) bool {
+	if transport.Dial != nil || transport.DialContext != nil || transport.DialTLS != nil || transport.DialTLSContext != nil || transport.TLSNextProto != nil {
+		return transport != http.DefaultTransport
+	}
+	config := transport.TLSClientConfig
+	return config != nil && (config.InsecureSkipVerify || config.ServerName != "" || config.RootCAs != nil || config.VerifyPeerCertificate != nil || config.VerifyConnection != nil)
 }
 
 func normalizeHost(raw string) (string, error) {

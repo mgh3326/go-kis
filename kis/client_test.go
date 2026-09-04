@@ -2,8 +2,11 @@ package kis
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -60,12 +63,50 @@ func TestFinalTransportPinAndReadOnlyMethod(t *testing.T) {
 }
 func TestTransportDisablesAmbientProxy(t *testing.T) {
 	configured := &http.Transport{Proxy: http.ProxyFromEnvironment}
-	transport := safeTransport(&http.Client{Transport: configured}).(*http.Transport)
+	roundTripper, err := safeTransport(&http.Client{Transport: configured})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := roundTripper.(*http.Transport)
 	if transport.Proxy != nil || configured.Proxy == nil {
 		t.Fatal("proxy was not removed from cloned transport")
 	}
-	if safeTransport(nil).(*http.Transport).Proxy != nil {
+	defaultTransport, err := safeTransport(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultTransport.(*http.Transport).Proxy != nil {
 		t.Fatal("default transport retained proxy")
+	}
+}
+
+func TestRejectUnsafeStandardTransport(t *testing.T) {
+	tests := []struct {
+		name      string
+		transport http.RoundTripper
+		unsafe    bool
+	}{
+		{"insecure skip verify", &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, true},
+		{"server name override", &http.Transport{TLSClientConfig: &tls.Config{ServerName: "other.invalid"}}, true},
+		{"custom roots", &http.Transport{TLSClientConfig: &tls.Config{RootCAs: x509.NewCertPool()}}, true},
+		{"verify peer callback", &http.Transport{TLSClientConfig: &tls.Config{VerifyPeerCertificate: func([][]byte, [][]*x509.Certificate) error { return nil }}}, true},
+		{"verify connection callback", &http.Transport{TLSClientConfig: &tls.Config{VerifyConnection: func(tls.ConnectionState) error { return nil }}}, true},
+		{"custom dial", &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) { return nil, nil }}, true},
+		{"custom tls dial", &http.Transport{DialTLSContext: func(context.Context, string, string) (net.Conn, error) { return nil, nil }}, true},
+		{"custom tls protocol", &http.Transport{TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{}}, true},
+		{"ordinary transport", &http.Transport{}, false},
+		{"offline fake", roundTripFunc(func(*http.Request) (*http.Response, error) { return response(200, `{"rt_cd":"0"}`), nil }), false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewClient(Config{Host: HostLive, AppKey: "fixture-appkey", AppSecret: "fixture-secret", RequestTimeout: time.Second, HTTPClient: &http.Client{Transport: test.transport}})
+			if test.unsafe && !errors.Is(err, ErrUnsafeTransport) {
+				t.Fatalf("unsafe transport err=%v", err)
+			}
+			if !test.unsafe && err != nil {
+				t.Fatalf("safe transport err=%v", err)
+			}
+		})
 	}
 }
 func TestRedirectAndSafeEnvelopeErrors(t *testing.T) {

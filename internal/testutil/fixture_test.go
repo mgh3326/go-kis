@@ -68,7 +68,7 @@ func TestReadFixturesAndBrokerQueries(t *testing.T) {
 	historyFixture := load(t, "overseas-order-history.json")
 	historyClient := fixtureClient(t, historyFixture, func(r *http.Request) {
 		q := r.URL.Query()
-		for k, want := range map[string]string{"ORD_STRT_DT": "20260901", "ORD_END_DT": "20260902", "SLL_BUY_DVSN": "00", "CCLD_NCCS_DVSN": "01", "PDNO": "AAPL", "ORD_DT": ""} {
+		for k, want := range map[string]string{"ORD_STRT_DT": "20260901", "ORD_END_DT": "20260902", "OVRS_EXCG_CD": "", "SLL_BUY_DVSN": "00", "CCLD_NCCS_DVSN": "00", "PDNO": "", "ODNO": "", "SORT_SQN": "DS", "ORD_DT": ""} {
 			if q.Get(k) != want {
 				t.Errorf("%s=%q", k, q.Get(k))
 			}
@@ -78,7 +78,7 @@ func TestReadFixturesAndBrokerQueries(t *testing.T) {
 		}
 	})
 	history, err := overseas.OrderHistory(context.Background(), historyClient, kis.Mock, overseas.OrderHistoryRequest{CANO: "12345678", ACNT_PRDT_CD: "01", ORD_STRT_DT: "20260901", ORD_END_DT: "20260902", SLL_BUY_DVSN: "00", CCLD_NCCS_DVSN: "01", PDNO: "AAPL"})
-	if err != nil || len(history.Output1) != 1 || history.Output1[0].FT_ORD_QTY != "001" {
+	if err != nil || len(history.Output) != 1 || history.Output[0].FT_ORD_QTY != "001" {
 		t.Fatalf("history=%+v err=%v", history, err)
 	}
 }

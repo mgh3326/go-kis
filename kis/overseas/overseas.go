@@ -66,7 +66,7 @@ type OrderHistoryRequest struct {
 }
 type OrderHistoryResponse struct {
 	kis.Envelope
-	Output1        []OrderHistoryItem `json:"output1"`
+	Output         []OrderHistoryItem `json:"output"`
 	CTX_AREA_FK200 string             `json:"ctx_area_fk200"`
 	CTX_AREA_NK200 string             `json:"ctx_area_nk200"`
 }
@@ -86,12 +86,21 @@ func OrderHistory(ctx context.Context, c *kis.Client, mode kis.Mode, r OrderHist
 		return OrderHistoryResponse{}, e
 	}
 	var out OrderHistoryResponse
-	e = c.Read(ctx, historyPath, tr, r.query(), &out)
+	e = c.Read(ctx, historyPath, tr, r.query(mode), &out)
 	return out, e
 }
 
-func (r OrderHistoryRequest) query() map[string]string {
-	return map[string]string{"CANO": r.CANO, "ACNT_PRDT_CD": r.ACNT_PRDT_CD, "OVRS_EXCG_CD": v(r.OVRS_EXCG_CD, "NASD"), "SORT_SQN": v(r.SORT_SQN, "DS"), "ORD_STRT_DT": r.ORD_STRT_DT, "ORD_END_DT": r.ORD_END_DT, "SLL_BUY_DVSN": r.SLL_BUY_DVSN, "CCLD_NCCS_DVSN": r.CCLD_NCCS_DVSN, "PDNO": r.PDNO, "ORD_DT": "", "ORD_GNO_BRNO": r.ORD_GNO_BRNO, "ODNO": r.ODNO, "CTX_AREA_FK200": r.CTX_AREA_FK200, "CTX_AREA_NK200": r.CTX_AREA_NK200}
+func (r OrderHistoryRequest) query(mode kis.Mode) map[string]string {
+	query := map[string]string{"CANO": r.CANO, "ACNT_PRDT_CD": r.ACNT_PRDT_CD, "OVRS_EXCG_CD": v(r.OVRS_EXCG_CD, "NASD"), "SORT_SQN": v(r.SORT_SQN, "DS"), "ORD_STRT_DT": r.ORD_STRT_DT, "ORD_END_DT": r.ORD_END_DT, "SLL_BUY_DVSN": r.SLL_BUY_DVSN, "CCLD_NCCS_DVSN": r.CCLD_NCCS_DVSN, "PDNO": r.PDNO, "ORD_DT": "", "ORD_GNO_BRNO": r.ORD_GNO_BRNO, "ODNO": r.ODNO, "CTX_AREA_FK200": r.CTX_AREA_FK200, "CTX_AREA_NK200": r.CTX_AREA_NK200}
+	if mode == kis.Mock {
+		query["PDNO"] = ""
+		query["OVRS_EXCG_CD"] = ""
+		query["SLL_BUY_DVSN"] = "00"
+		query["CCLD_NCCS_DVSN"] = "00"
+		query["ODNO"] = ""
+		query["SORT_SQN"] = "DS"
+	}
+	return query
 }
 
 func v(x, d string) string {
