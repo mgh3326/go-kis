@@ -1,23 +1,23 @@
 # go-kis
 
-`go-kis` is an unofficial Go client for Korea Investment & Securities (KIS) REST APIs.
+`go-kis` is an unofficial, **read-only** Go protocol client for Korea
+Investment & Securities (KIS). It has no order, amendment, or cancellation
+API. Trading policy, account scope, and authorization decisions remain the
+responsibility of the calling application.
 
-This is a protocol library, not a trading application. It contains **no** host allowlist, mutation gate, account scope, witness, metrics, or trading policy. Those controls are the responsibility of the application that imports it.
+REST clients require one explicit approved HTTPS host: `kis.HostVTS` or
+`kis.HostLive`. There is no default host; redirects and proxies are blocked.
 
-Every client must explicitly set a host. There is no default:
-
-```go
-client, err := kis.NewClient(kis.Config{Host: kis.HostVTS /* or kis.HostLive */, /* credentials, token provider, timeout */})
-```
-
-Requests require a timeout; redirects are always rejected. Token, app key, and app secret values are redacted from KIS API errors. `kis.Mock` and `kis.Live` select the documented TR-ID column independently of the explicit host.
-
-| Package | API | VTS / live TR IDs |
+| Package | Read API | VTS / live TR IDs |
 |---|---|---|
 | `kis/domestic` | balance | `VTTC8434R` / `TTTC8434R` |
-| `kis/domestic` | daily orders | `VTTC8001R` / `TTTC8001R` |
-| `kis/domestic` | cash buy, sell, revise/cancel | `VTTC0012U`, `VTTC0011U`, `VTTC0013U` / `TTTC0012U`, `TTTC0011U`, `TTTC0013U` |
-| `kis/overseas` | balance, order history | `VTTS3012R`, `VTTS3035R` / `TTTS3012R`, `TTTS3035R` |
-| `kis/overseas` | US buy, sell, cancel | `VTTT1002U`, `VTTT1001U`, `VTTT1004U` / `TTTT1002U`, `TTTT1001U`, `TTTT1004U` |
+| `kis/domestic` | order history | `VTTC8001R` / `TTTC8001R` |
+| `kis/overseas` | balance | `VTTS3012R` / `TTTS3012R` |
+| `kis/overseas` | order history | `VTTS3035R` / `TTTS3035R` |
 
-See [examples/balance](examples/balance) for a read-only VTS balance request. Order APIs are available but intentionally have no executable example.
+WebSocket subscription uses KIS's official plaintext `ws://` transport only
+for the allowlisted KIS authorities; this is distinct from REST, which is
+always HTTPS. Inject a dialer in applications and tests; the library never
+selects a user-defined WebSocket authority.
+
+See [examples/balance](examples/balance) for a read-only balance request.

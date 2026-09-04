@@ -9,8 +9,6 @@ import (
 const (
 	balancePath = "/uapi/domestic-stock/v1/trading/inquire-balance"
 	historyPath = "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
-	orderPath   = "/uapi/domestic-stock/v1/trading/order-cash"
-	cancelPath  = "/uapi/domestic-stock/v1/trading/order-rvsecncl"
 )
 
 type BalanceRequest struct {
@@ -49,7 +47,7 @@ type BalanceSummary struct {
 
 func (r BalanceRequest) query() map[string]string {
 	return map[string]string{
-		"CANO": r.CANO, "ACNT_PRDT_CD": r.ACNT_PRDT_CD, "AFHR_FLPR_YN": value(r.AFHR_FLPR_YN, "N"), "OFL_YN": r.OFL_YN, "INQR_DVSN": value(r.INQR_DVSN, "01"), "UNPR_DVSN": value(r.UNPR_DVSN, "01"), "FUND_STTL_ICLD_YN": value(r.FUND_STTL_ICLD_YN, "N"), "FNCG_AMT_AUTO_RDPT_YN": value(r.FNCG_AMT_AUTO_RDPT_YN, "N"), "PRCS_DVSN": value(r.PRCS_DVSN, "00"), "CTX_AREA_FK100": r.CTX_AREA_FK100, "CTX_AREA_NK100": r.CTX_AREA_NK100}
+		"CANO": r.CANO, "ACNT_PRDT_CD": r.ACNT_PRDT_CD, "AFHR_FLPR_YN": value(r.AFHR_FLPR_YN, "N"), "OFL_YN": r.OFL_YN, "INQR_DVSN": value(r.INQR_DVSN, "00"), "UNPR_DVSN": value(r.UNPR_DVSN, "01"), "FUND_STTL_ICLD_YN": value(r.FUND_STTL_ICLD_YN, "N"), "FNCG_AMT_AUTO_RDPT_YN": value(r.FNCG_AMT_AUTO_RDPT_YN, "N"), "PRCS_DVSN": value(r.PRCS_DVSN, "01"), "CTX_AREA_FK100": r.CTX_AREA_FK100, "CTX_AREA_NK100": r.CTX_AREA_NK100}
 }
 func Balance(ctx context.Context, client *kis.Client, mode kis.Mode, request BalanceRequest) (BalanceResponse, error) {
 	tr, err := kis.TransactionID(mode, "VTTC8434R", "TTTC8434R")
@@ -57,7 +55,7 @@ func Balance(ctx context.Context, client *kis.Client, mode kis.Mode, request Bal
 		return BalanceResponse{}, err
 	}
 	var response BalanceResponse
-	err = client.Do(ctx, "GET", balancePath, tr, request.query(), nil, false, &response)
+	err = client.Read(ctx, balancePath, tr, request.query(), &response)
 	return response, err
 }
 
@@ -103,67 +101,10 @@ func OrderHistory(ctx context.Context, client *kis.Client, mode kis.Mode, reques
 		return OrderHistoryResponse{}, err
 	}
 	var response OrderHistoryResponse
-	err = client.Do(ctx, "GET", historyPath, tr, request.query(), nil, false, &response)
+	err = client.Read(ctx, historyPath, tr, request.query(), &response)
 	return response, err
 }
 
-type CashOrderRequest struct {
-	CANO            string `json:"CANO"`
-	ACNT_PRDT_CD    string `json:"ACNT_PRDT_CD"`
-	PDNO            string `json:"PDNO"`
-	ORD_DVSN        string `json:"ORD_DVSN"`
-	ORD_QTY         string `json:"ORD_QTY"`
-	ORD_UNPR        string `json:"ORD_UNPR"`
-	EXCG_ID_DVSN_CD string `json:"EXCG_ID_DVSN_CD"`
-}
-type OrderResponse struct {
-	kis.Envelope
-	Output OrderOutput `json:"output"`
-}
-type OrderOutput struct {
-	KRX_FWDG_ORD_ORGNO string `json:"KRX_FWDG_ORD_ORGNO"`
-	ODNO               string `json:"ODNO"`
-	ORD_TMD            string `json:"ORD_TMD"`
-}
-
-func BuyCash(ctx context.Context, client *kis.Client, mode kis.Mode, request CashOrderRequest) (OrderResponse, error) {
-	return cash(ctx, client, mode, "VTTC0012U", "TTTC0012U", request)
-}
-func SellCash(ctx context.Context, client *kis.Client, mode kis.Mode, request CashOrderRequest) (OrderResponse, error) {
-	return cash(ctx, client, mode, "VTTC0011U", "TTTC0011U", request)
-}
-func cash(ctx context.Context, client *kis.Client, mode kis.Mode, mock, live string, request CashOrderRequest) (OrderResponse, error) {
-	tr, err := kis.TransactionID(mode, mock, live)
-	if err != nil {
-		return OrderResponse{}, err
-	}
-	var response OrderResponse
-	err = client.Do(ctx, "POST", orderPath, tr, nil, request, true, &response)
-	return response, err
-}
-
-type ReviseCancelRequest struct {
-	CANO               string `json:"CANO"`
-	ACNT_PRDT_CD       string `json:"ACNT_PRDT_CD"`
-	KRX_FWDG_ORD_ORGNO string `json:"KRX_FWDG_ORD_ORGNO"`
-	ORGN_ODNO          string `json:"ORGN_ODNO"`
-	ORD_DVSN           string `json:"ORD_DVSN"`
-	RVSE_CNCL_DVSN_CD  string `json:"RVSE_CNCL_DVSN_CD"`
-	ORD_QTY            string `json:"ORD_QTY"`
-	ORD_UNPR           string `json:"ORD_UNPR"`
-	QTY_ALL_ORD_YN     string `json:"QTY_ALL_ORD_YN"`
-	EXCG_ID_DVSN_CD    string `json:"EXCG_ID_DVSN_CD"`
-}
-
-func ReviseCancel(ctx context.Context, client *kis.Client, mode kis.Mode, request ReviseCancelRequest) (OrderResponse, error) {
-	tr, err := kis.TransactionID(mode, "VTTC0013U", "TTTC0013U")
-	if err != nil {
-		return OrderResponse{}, err
-	}
-	var response OrderResponse
-	err = client.Do(ctx, "POST", cancelPath, tr, nil, request, true, &response)
-	return response, err
-}
 func value(given, fallback string) string {
 	if given == "" {
 		return fallback

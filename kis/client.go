@@ -1,5 +1,4 @@
-// Package kis is an unofficial, low-level client for the Korea Investment &
-// Securities REST API. It deliberately contains no trading policy.
+// Package kis is an unofficial, read-only client for selected KIS protocols.
 package kis
 
 import (
@@ -10,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,17 +22,27 @@ var (
 	ErrHostRequired    = errors.New("kis: host is required")
 	ErrTimeoutRequired = errors.New("kis: request timeout is required")
 	ErrRedirectBlocked = errors.New("kis: redirect blocked")
-	ErrHashKeyRequired = errors.New("kis: hashkey is required for mutation requests")
+	ErrTransportPinned = errors.New("kis: request target is not an approved KIS REST host")
 )
 
-// TokenProvider supplies a bearer token. Storage, refresh policy, and Redis
-// integration belong to the application using this client.
+// TokenProvider permits applications with their own token cache to supply a token.
+// When omitted, Client obtains and safely caches OAuth tokens itself.
 type TokenProvider interface {
 	Token(context.Context) (string, error)
 }
 type TokenProviderFunc func(context.Context) (string, error)
 
 func (f TokenProviderFunc) Token(ctx context.Context) (string, error) { return f(ctx) }
+
+// Clock permits deterministic rate-limit and token-life tests.
+type Clock interface {
+	Now() time.Time
+	After(time.Duration) <-chan time.Time
+}
+type realClock struct{}
+
+func (realClock) Now() time.Time                         { return time.Now() }
+func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
 type Config struct {
 	Host           string
@@ -41,15 +51,19 @@ type Config struct {
 	HTTPClient     *http.Client
 	RequestTimeout time.Duration
 	TokenProvider  TokenProvider
+	Clock          Clock
 }
 
 type Client struct {
-	host       string
-	appKey     string
-	appSecret  string
-	httpClient *http.Client
-	timeout    time.Duration
-	tokens     TokenProvider
+	host, appKey, appSecret string
+	httpClient              *http.Client
+	timeout                 time.Duration
+	tokens                  TokenProvider
+	clock                   Clock
+	limiter                 *limiter
+	tokenMu                 sync.Mutex
+	cachedToken             OAuthToken
+	cachedUntil             time.Time
 }
 
 func NewClient(config Config) (*Client, error) {
@@ -67,14 +81,33 @@ func NewClient(config Config) (*Client, error) {
 	if timeout <= 0 {
 		return nil, ErrTimeoutRequired
 	}
-	client := http.DefaultClient
-	if config.HTTPClient != nil {
-		client = config.HTTPClient
+	clock := config.Clock
+	if clock == nil {
+		clock = realClock{}
 	}
-	copy := *client
-	copy.Timeout = timeout
-	copy.CheckRedirect = func(*http.Request, []*http.Request) error { return ErrRedirectBlocked }
-	return &Client{host: host, appKey: config.AppKey, appSecret: config.AppSecret, httpClient: &copy, timeout: timeout, tokens: config.TokenProvider}, nil
+	transport := safeTransport(config.HTTPClient)
+	copy := http.Client{Timeout: timeout, Transport: pinningTransport{base: transport}, CheckRedirect: func(*http.Request, []*http.Request) error { return ErrRedirectBlocked }}
+	interval := 50 * time.Millisecond
+	if host == HostVTS {
+		interval = 500 * time.Millisecond
+	}
+	return &Client{host: host, appKey: config.AppKey, appSecret: config.AppSecret, httpClient: &copy, timeout: timeout, tokens: config.TokenProvider, clock: clock, limiter: &limiter{clock: clock, interval: interval}}, nil
+}
+
+func safeTransport(client *http.Client) http.RoundTripper {
+	var base http.RoundTripper
+	if client != nil {
+		base = client.Transport
+	}
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if transport, ok := base.(*http.Transport); ok {
+		clone := transport.Clone()
+		clone.Proxy = nil // credentials must never use an ambient proxy.
+		return clone
+	}
+	return base
 }
 
 func normalizeHost(raw string) (string, error) {
@@ -82,25 +115,54 @@ func normalizeHost(raw string) (string, error) {
 		return "", ErrHostRequired
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || (u.Scheme != "https" && u.Scheme != "http") {
-		return "", errors.New("kis: invalid host")
+	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return "", errors.New("kis: invalid REST host")
+	}
+	if u.Scheme != "https" {
+		return "", errors.New("kis: REST must use HTTPS")
+	}
+	if u.Host != "openapivts.koreainvestment.com:29443" && u.Host != "openapi.koreainvestment.com:9443" {
+		return "", errors.New("kis: REST host is not allowlisted")
 	}
 	u.Path, u.RawPath = "", ""
 	return u.String(), nil
+}
+
+type pinningTransport struct{ base http.RoundTripper }
+
+func (p pinningTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL == nil || (req.URL.String() != HostVTS+req.URL.RequestURI() && req.URL.String() != HostLive+req.URL.RequestURI()) {
+		return nil, ErrTransportPinned
+	}
+	return p.base.RoundTrip(req)
 }
 
 func safeHeader(value string) bool { return !strings.ContainsAny(value, "\r\n") }
 func (c *Client) Host() string     { return c.host }
 
 func (c *Client) token(ctx context.Context) (string, error) {
-	if c.tokens == nil {
-		return "", errors.New("kis: token provider is required")
+	if c.tokens != nil {
+		token, err := c.tokens.Token(ctx)
+		if err != nil || token == "" || !safeHeader(token) {
+			return "", errors.New("kis: token unavailable")
+		}
+		return token, nil
 	}
-	token, err := c.tokens.Token(ctx)
-	if err != nil || token == "" || !safeHeader(token) {
+	c.tokenMu.Lock()
+	defer c.tokenMu.Unlock()
+	if c.cachedToken.AccessToken != "" && c.clock.Now().Before(c.cachedUntil) {
+		return c.cachedToken.AccessToken, nil
+	}
+	issued, err := c.issueToken(ctx)
+	if err != nil {
 		return "", errors.New("kis: token unavailable")
 	}
-	return token, nil
+	if issued.AccessToken == "" || issued.ExpiresIn <= 0 || !safeHeader(issued.AccessToken) {
+		return "", errors.New("kis: token unavailable")
+	}
+	c.cachedToken = issued
+	c.cachedUntil = c.clock.Now().Add(time.Duration(issued.ExpiresIn)*time.Second - time.Minute)
+	return issued.AccessToken, nil
 }
 
 func (c *Client) newRequest(ctx context.Context, method, path string, body []byte) (*http.Request, context.CancelFunc, error) {

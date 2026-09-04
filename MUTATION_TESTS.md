@@ -1,10 +1,6 @@
-# Mutation-regression record
+# Safety regression record
 
-The following mutants were reproduced locally and restored before this change:
-
-| Mutant | Guard | Expected failure |
-|---|---|---|
-| Follow HTTP redirects | `TestRedirectBlocked` | redirect is returned as `kis.ErrRedirectBlocked` |
-| Render the configured app secret in an API error | `TestAPIErrorRedactsSecret` | secret cannot occur in `error.Error()` |
-| Insert a default host | `TestHostRequired` | construction returns `kis.ErrHostRequired` |
-| Omit a mutation hashkey | `TestMutationWithoutHashKeyIsRejected` | request returns `kis.ErrHashKeyRequired` |
+The repository tests reject an unapproved REST host, HTTP REST, removal of
+the 60-second OAuth safety buffer, and removal of the REST limiter wait. The
+read-only AST boundary test rejects account-mutation paths, transaction IDs,
+and public mutation symbols in production Go source.

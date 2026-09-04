@@ -1,12 +1,1 @@
-{
-  "rt_cd": "0",
-  "output1": [{
-    "odno": "42",
-    "sll_buy_dvsn_cd": "02",
-    "pdno": "005930",
-    "ord_qty": "001",
-    "ord_unpr": "70000",
-    "ord_dt": "20260901",
-    "ord_tmd": "101010"
-  }]
-}
+{"status":200,"headers":{"tr_id":"VTTC8001R","msg_cd":"MCA00000"},"raw_body":"{\"rt_cd\":\"0\",\"msg_cd\":\"MCA00000\",\"msg1\":\"정상처리 되었습니다.\",\"output1\":[{\"odno\":\"000123\",\"pdno\":\"005930\",\"sll_buy_dvsn_cd\":\"02\",\"ord_qty\":\"001\",\"ord_unpr\":\"70000\",\"ord_dt\":\"20260901\",\"ord_tmd\":\"091000\"}],\"output2\":[]}"}

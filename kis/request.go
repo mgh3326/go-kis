@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
+	"net/http"
 )
 
 const responseLimit = 2 << 20
@@ -31,51 +31,35 @@ type Envelope struct {
 	Msg1  string `json:"msg1"`
 }
 
-// Do executes an API request. It adds standard KIS headers and maps the KIS
-// response envelope to APIError. It never includes credential values in errors.
-func (c *Client) Do(ctx context.Context, method, path, trID string, query map[string]string, payload any, requireHashKey bool, output any) error {
-	if method != "GET" && strings.HasPrefix(path, "/uapi/") && path != "/uapi/hashkey" && !requireHashKey {
-		return ErrHashKeyRequired
-	}
-	var body []byte
-	var err error
-	if payload != nil {
-		body, err = json.Marshal(payload)
-		if err != nil {
-			return fmt.Errorf("kis: encode request: %w", err)
-		}
-	}
-	if requireHashKey {
-		key, keyErr := c.HashKey(ctx, body)
-		if keyErr != nil {
-			return keyErr
-		}
-		return c.do(ctx, method, path, trID, query, body, key, output)
-	}
-	return c.do(ctx, method, path, trID, query, body, "", output)
+// Read sends a GET-only, read-only KIS transaction. There is no public method
+// capable of sending an account mutation.
+func (c *Client) Read(ctx context.Context, path, trID string, query map[string]string, output any) error {
+	return c.send(ctx, http.MethodGet, path, trID, query, nil, true, output)
 }
 
-func (c *Client) do(ctx context.Context, method, path, trID string, query map[string]string, body []byte, hashKey string, output any) error {
+func (c *Client) send(ctx context.Context, method, path, trID string, query map[string]string, body []byte, envelope bool, output any) error {
+	if err := c.limiter.Wait(ctx); err != nil {
+		return err
+	}
 	req, cancel, err := c.newRequest(ctx, method, path, body)
 	if err != nil {
 		return err
 	}
 	defer cancel()
 	q := req.URL.Query()
-	for key, value := range query {
-		q.Set(key, value)
+	for k, v := range query {
+		q.Set(k, v)
 	}
 	req.URL.RawQuery = q.Encode()
-	token := ""
-	isOAuth := path == "/oauth2/tokenP" || path == "/oauth2/Approval"
-	if !isOAuth && path != "/uapi/hashkey" {
-		token, err = c.token(ctx)
-		if err != nil {
-			return err
+	isAuth := path == "/oauth2/tokenP" || path == "/oauth2/Approval"
+	if !isAuth && path != "/uapi/hashkey" {
+		token, e := c.token(ctx)
+		if e != nil {
+			return e
 		}
 		req.Header.Set("authorization", "Bearer "+token)
 	}
-	if !isOAuth {
+	if !isAuth {
 		req.Header.Set("appkey", c.appKey)
 		req.Header.Set("appsecret", c.appSecret)
 		req.Header.Set("tr_id", trID)
@@ -83,9 +67,6 @@ func (c *Client) do(ctx context.Context, method, path, trID string, query map[st
 	}
 	if len(body) > 0 {
 		req.Header.Set("content-type", "application/json")
-	}
-	if hashKey != "" {
-		req.Header.Set("hashkey", hashKey)
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -95,6 +76,9 @@ func (c *Client) do(ctx context.Context, method, path, trID string, query map[st
 		return fmt.Errorf("kis: request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return ErrRedirectBlocked
+	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
 	if err != nil {
 		return errors.New("kis: read response failed")
@@ -102,10 +86,20 @@ func (c *Client) do(ctx context.Context, method, path, trID string, query map[st
 	if len(raw) > responseLimit {
 		return errors.New("kis: response too large")
 	}
-	var envelope Envelope
-	_ = json.Unmarshal(raw, &envelope)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 || (envelope.RTCD != "" && envelope.RTCD != "0") {
-		return &APIError{Status: resp.StatusCode, Code: envelope.MsgCD, Message: c.redact(envelope.Msg1, token)}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &APIError{Status: resp.StatusCode, Code: resp.Header.Get("msg_cd"), Message: "request rejected"}
+	}
+	if envelope {
+		var shape map[string]json.RawMessage
+		if json.Unmarshal(raw, &shape) != nil || shape["rt_cd"] == nil {
+			return &APIError{Status: resp.StatusCode, Code: resp.Header.Get("msg_cd"), Message: "invalid response envelope"}
+		}
+		var rt string
+		if json.Unmarshal(shape["rt_cd"], &rt) != nil || rt != "0" {
+			var code string
+			_ = json.Unmarshal(shape["msg_cd"], &code)
+			return &APIError{Status: resp.StatusCode, Code: code, Message: "request rejected"}
+		}
 	}
 	if output != nil && len(bytes.TrimSpace(raw)) > 0 {
 		if err := json.Unmarshal(raw, output); err != nil {
@@ -113,14 +107,4 @@ func (c *Client) do(ctx context.Context, method, path, trID string, query map[st
 		}
 	}
 	return nil
-}
-
-func (c *Client) redact(message string, values ...string) string {
-	values = append(values, c.appKey, c.appSecret)
-	for _, secret := range values {
-		if secret != "" {
-			message = strings.ReplaceAll(message, secret, "[REDACTED]")
-		}
-	}
-	return message
 }

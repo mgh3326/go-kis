@@ -21,6 +21,4 @@ func main() {
 		panic(err)
 	}
 	fmt.Printf("positions: %d\n", len(result.Output1))
-	// Orders are intentionally not executable in this example. Review KIS terms,
-	// your account scope, and application-side controls before calling BuyCash.
 }
