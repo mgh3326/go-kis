@@ -42,7 +42,10 @@ func TestReconnectResubscribesInOrder(t *testing.T) {
 		OnReconnect: func(info ws.ReconnectInfo) {
 			hook.record(info)
 			if restored := server.latestConn(); restored != nil {
-				hookFrameCount <- len(restored.written())
+				select {
+				case hookFrameCount <- len(restored.written()):
+				default:
+				}
 			}
 		},
 		Clock:   clock,

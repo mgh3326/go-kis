@@ -157,6 +157,17 @@ func TestExecutionMaterialIsolatedByTransaction(t *testing.T) {
 	if len(conn.Events()) != 0 {
 		t.Fatalf("wrong-material frame published an event: %d buffered", len(conn.Events()))
 	}
+
+	// TR-A's material must remain intact after TR-B's ACK. The label is also
+	// TR-A, so a storeMaterial mutant that overwrites every known TR fails here.
+	socket.push(encryptedExecutionFrame(ws.TRExecutionLive, liveKey, liveIV, fields))
+	liveEvent := waitEvent(t, conn)
+	if liveEvent.TR != ws.TRExecutionLive || liveEvent.Execution == nil || liveEvent.ExecutionErr != nil {
+		t.Fatalf("live event after VTS ACK = %+v, want successful TR-A decryption", liveEvent)
+	}
+	if liveEvent.Execution.Symbol != "005930" || liveEvent.Execution.Price != "71000" {
+		t.Fatalf("live execution after VTS ACK = %+v, want the synthetic record", *liveEvent.Execution)
+	}
 }
 
 func encryptedExecutionFrame(tr, key, iv, fields string) string {

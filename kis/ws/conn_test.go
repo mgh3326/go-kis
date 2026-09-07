@@ -202,7 +202,7 @@ func TestEventBufferCapacityIsApplied(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		socket.push(fmt.Sprintf("0|H0STCNT0|001|005930^091000^%d^001", 71000+i))
 	}
-	waitFor(t, func() bool { return len(conn.Events()) == 1 && socket.queued() > 0 })
+	waitFor(t, func() bool { return len(conn.Events()) == 1 && socket.queued() > 0 }, "EventBuffer=1 did not apply: reader drained the fake socket input")
 	if got := len(conn.Events()); got != 1 {
 		t.Fatalf("Events capacity = %d, want 1", got)
 	}
@@ -407,7 +407,7 @@ func (p approvalErrorProvider) ApprovalKey(context.Context) (string, error) { re
 func (p approvalErrorProvider) Reissue(context.Context) (string, error)     { return "", p.err }
 
 // waitFor polls cond until it holds or the test times out.
-func waitFor(t *testing.T, cond func() bool) {
+func waitFor(t *testing.T, cond func() bool, messages ...string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -415,6 +415,10 @@ func waitFor(t *testing.T, cond func() bool) {
 			return
 		}
 		time.Sleep(time.Millisecond)
+	}
+	if len(messages) > 0 {
+		t.Fatal(messages[0])
+		return
 	}
 	t.Fatal("condition was never met")
 }

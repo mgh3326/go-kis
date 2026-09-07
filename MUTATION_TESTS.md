@@ -108,11 +108,29 @@ FAIL	github.com/mgh3326/go-kis/kis/ws	3.452s
 
 Reverted; `git status --short` empty.
 
+The second M12 form was also applied: `c.material[tr] = material` →
+`for known := range c.material { c.material[known] = material }; c.material[tr] = material`.
+This overwrites every previously stored transaction's material. The same
+test failed by assertion after the new TR-A frame was added:
+
+```
+=== RUN   TestExecutionMaterialIsolatedByTransaction
+    execution_test.go:164: no event arrived; stats={DroppedFrames:2 LastDropTR:H0STCNI0 LastDropReason:ws: encrypted payload is not decryptable}
+--- FAIL: TestExecutionMaterialIsolatedByTransaction (3.00s)
+FAIL
+FAIL	github.com/mgh3326/go-kis/kis/ws	3.483s
+```
+
+Reverted; `git status --short` empty.
+
 **M13 — decryption material lookup returns an arbitrary transaction's entry** (`kis/ws/reader.go:238`)
 
 `material, ok := c.material[tr]; return material, ok` → return the first
 material encountered while ranging over `c.material`. A frame's transaction
-label can then select the wrong AES key/iv.
+label can then select the wrong AES key/iv. This mutant is probabilistic,
+because Go map iteration order is random; the independent 60-run measurement
+for this exact mutation observed 2 surviving runs. The failure excerpt below
+is one observed failing run, not a deterministic-run claim.
 
 `TestExecutionMaterialIsolatedByTransaction` FAILED by assertion:
 
@@ -156,7 +174,7 @@ backpressure test can no longer observe unread frames in the fake socket.
 
 ```
 === RUN   TestEventBufferCapacityIsApplied
-    conn_test.go:205: condition was never met
+    conn_test.go:205: EventBuffer=1 did not apply: reader drained the fake socket input
 --- FAIL: TestEventBufferCapacityIsApplied (3.00s)
 FAIL
 FAIL	github.com/mgh3326/go-kis/kis/ws	3.458s

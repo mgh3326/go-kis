@@ -32,7 +32,8 @@ func reissuable(msgCode string) bool {
 
 // The protocol error vocabulary of this package is closed and consists of
 // exactly these three values. KIS protocol failures beyond them are reported
-// as SubscribeError rather than as new exported sentinels.
+// as SubscribeError rather than as new exported sentinels; malformed execution
+// record shapes are surfaced separately through Event.ExecutionErr.
 var (
 	// ErrSessionOccupied reports KIS msg_cd OPSP8996: this app key already has
 	// a WebSocket session. It is never retried and never triggers an approval
