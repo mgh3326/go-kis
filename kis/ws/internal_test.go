@@ -1,11 +1,43 @@
 package ws
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/mgh3326/go-kis/kis"
 )
+
+type approvalRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f approvalRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestClientProviderIssueSanitizesUpstreamError(t *testing.T) {
+	const upstream = "upstream request secret=synthetic-credential"
+	client, err := kis.NewClient(kis.Config{
+		Host:           kis.HostVTS,
+		AppKey:         "test-app-key",
+		AppSecret:      "test-app-secret",
+		RequestTimeout: time.Second,
+		HTTPClient: &http.Client{Transport: approvalRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New(upstream)
+		})},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, err = (&clientProvider{client: client}).issue(context.Background())
+	if !errors.Is(err, errApprovalUnavailable) {
+		t.Fatalf("issue error = %v, want errApprovalUnavailable", err)
+	}
+	if strings.Contains(err.Error(), upstream) {
+		t.Fatalf("issue error leaked upstream detail: %v", err)
+	}
+}
 
 // Material arrives either literally or base64-encoded, and the literal reading
 // wins when it already has an accepted length.

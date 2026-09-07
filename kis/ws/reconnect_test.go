@@ -35,12 +35,18 @@ func TestReconnectResubscribesInOrder(t *testing.T) {
 	server := newServer()
 	hook := &reconnectRecorder{}
 	clock := &testClock{}
+	hookFrameCount := make(chan int, 1)
 	conn := dialTest(t, ws.Config{
-		Approval:    &staticProvider{key: "k"},
-		Dialer:      server,
-		OnReconnect: hook.record,
-		Clock:       clock,
-		Backoff:     ws.BackoffConfig{Min: 7 * time.Millisecond, Max: time.Second, Factor: 2, Jitter: -1},
+		Approval: &staticProvider{key: "k"},
+		Dialer:   server,
+		OnReconnect: func(info ws.ReconnectInfo) {
+			hook.record(info)
+			if restored := server.latestConn(); restored != nil {
+				hookFrameCount <- len(restored.written())
+			}
+		},
+		Clock:   clock,
+		Backoff: ws.BackoffConfig{Min: 7 * time.Millisecond, Max: time.Second, Factor: 2, Jitter: -1},
 	})
 	for _, symbol := range symbols {
 		if err := conn.Subscribe(context.Background(), ws.TRQuotePrice, symbol); err != nil {
@@ -52,6 +58,14 @@ func TestReconnectResubscribesInOrder(t *testing.T) {
 
 	restored := server.conn(t, 1)
 	waitFor(t, func() bool { return len(hook.snapshot()) > 0 })
+	select {
+	case count := <-hookFrameCount:
+		if count != len(symbols) {
+			t.Fatalf("frames visible inside OnReconnect = %d, want %d: hook ran before resubscriptions completed", count, len(symbols))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("OnReconnect did not capture restored frames")
+	}
 
 	frames := restored.written()
 	if len(frames) != len(symbols) {

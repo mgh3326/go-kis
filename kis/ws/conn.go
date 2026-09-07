@@ -84,6 +84,9 @@ type Event struct {
 	Fields []string
 	// Execution is set only for TRExecutionLive and TRExecutionVTS.
 	Execution *Execution
+	// ExecutionErr explains why an execution-notice record was not interpreted.
+	// The event and its wire fields are still published when this is non-nil.
+	ExecutionErr error
 	// Raw is the frame exactly as received, before decryption. It is always
 	// populated, so a caller can re-parse or archive anything this package
 	// did not model.

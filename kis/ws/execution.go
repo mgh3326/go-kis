@@ -2,6 +2,7 @@ package ws
 
 import (
 	"errors"
+	"fmt"
 	"math/big"
 	"strconv"
 	"strings"
@@ -12,7 +13,8 @@ type Side string
 
 const (
 	// SideUnknown is reported when the field is absent or carries a code this
-	// package does not recognise. The original code stays in Execution.Raw.
+	// package does not recognise. The original code stays in Event.Fields and
+	// Event.Raw.
 	SideUnknown Side = ""
 	// SideSell is the sell (ask) side: KIS codes "01", "1", "S".
 	SideSell Side = "sell"
@@ -31,6 +33,11 @@ const (
 	idxFilledAt = 11
 	idxFilled   = 13
 )
+
+// ExecutionFieldCount is the exact number of fields in a documented
+// execution-notice record. Records with any other length are retained as
+// events but are not interpreted as executions.
+const ExecutionFieldCount = 14
 
 // Execution is one domestic execution notice.
 //
@@ -82,10 +89,20 @@ func IsExecution(tr string) bool {
 	return tr == TRExecutionLive || tr == TRExecutionVTS
 }
 
-// parseExecution maps a decrypted record onto Execution. A record shorter than
-// the highest index simply leaves the missing members at their zero value; the
-// caller still receives every field it did contain, plus Event.Raw.
-func parseExecution(fields []string) *Execution {
+// executionFieldCountError reports a record whose shape is not documented.
+// It stays private so the public error vocabulary remains closed.
+type executionFieldCountError int
+
+func (e executionFieldCountError) Error() string {
+	return fmt.Sprintf("ws: execution record has %d fields, want %d", int(e), ExecutionFieldCount)
+}
+
+// parseExecution maps an exactly documented record onto Execution. The caller
+// still retains every field and the raw frame when the shape is invalid.
+func parseExecution(fields []string) (*Execution, error) {
+	if len(fields) != ExecutionFieldCount {
+		return nil, executionFieldCountError(len(fields))
+	}
 	return &Execution{
 		OrderNo:  field(fields, idxOrderNo),
 		Symbol:   field(fields, idxSymbol),
@@ -94,7 +111,7 @@ func parseExecution(fields []string) *Execution {
 		Price:    field(fields, idxPrice),
 		FilledAt: field(fields, idxFilledAt),
 		Filled:   field(fields, idxFilled),
-	}
+	}, nil
 }
 
 func parseSide(code string) Side {
