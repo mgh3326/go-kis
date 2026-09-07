@@ -185,6 +185,64 @@ func TestDefaultProviderUsesClientApproval(t *testing.T) {
 	}
 }
 
+// A configured one-slot event buffer must backpressure the reader. The
+// unconsumed socket input makes the configured capacity observable without a
+// timing guess.
+func TestEventBufferCapacityIsApplied(t *testing.T) {
+	server := newServer()
+	conn := dialTest(t, ws.Config{
+		Approval:    &staticProvider{key: "k"},
+		Dialer:      server,
+		EventBuffer: 1,
+	})
+	if err := conn.Subscribe(context.Background(), ws.TRQuotePrice, "005930"); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	socket := server.conn(t, 0)
+	for i := 0; i < 5; i++ {
+		socket.push(fmt.Sprintf("0|H0STCNT0|001|005930^091000^%d^001", 71000+i))
+	}
+	waitFor(t, func() bool { return len(conn.Events()) == 1 && socket.queued() > 0 }, "EventBuffer=1 did not apply: reader drained the fake socket input")
+	if got := len(conn.Events()); got != 1 {
+		t.Fatalf("Events capacity = %d, want 1", got)
+	}
+	if queued := socket.queued(); queued == 0 {
+		t.Fatal("reader drained all five frames despite EventBuffer=1")
+	}
+}
+
+// Provider failures fail Dial and expose only the package-level sanitized
+// error, not the request or its synthetic credential detail.
+func TestApprovalProviderErrorsAreSanitized(t *testing.T) {
+	const upstream = "upstream request secret=synthetic-credential"
+	server := newServer()
+	_, err := ws.Dial(context.Background(), ws.Config{
+		Endpoint: ws.EndpointVTS,
+		Approval: approvalErrorProvider{err: errors.New(upstream)},
+		Dialer:   server,
+	})
+	if err == nil || strings.Contains(err.Error(), upstream) {
+		t.Fatalf("provider error = %v, want a sanitized Dial failure", err)
+	}
+
+	client, err := kis.NewClient(kis.Config{
+		Host:           kis.HostVTS,
+		AppKey:         "test-app-key",
+		AppSecret:      "test-app-secret",
+		RequestTimeout: time.Second,
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New(upstream)
+		})},
+	})
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	_, err = ws.Dial(context.Background(), ws.Config{Endpoint: ws.EndpointVTS, Client: client, Dialer: server})
+	if err == nil || strings.Contains(err.Error(), upstream) {
+		t.Fatalf("default provider error = %v, want a sanitized Dial failure", err)
+	}
+}
+
 // Test 8: events reach the consumer in exactly the order the socket produced
 // them, including when the bounded buffer is smaller than the burst.
 func TestEventOrderPreserved(t *testing.T) {
@@ -343,8 +401,13 @@ type readCloser struct{ *strings.Reader }
 
 func (readCloser) Close() error { return nil }
 
+type approvalErrorProvider struct{ err error }
+
+func (p approvalErrorProvider) ApprovalKey(context.Context) (string, error) { return "", p.err }
+func (p approvalErrorProvider) Reissue(context.Context) (string, error)     { return "", p.err }
+
 // waitFor polls cond until it holds or the test times out.
-func waitFor(t *testing.T, cond func() bool) {
+func waitFor(t *testing.T, cond func() bool, messages ...string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -352,6 +415,10 @@ func waitFor(t *testing.T, cond func() bool) {
 			return
 		}
 		time.Sleep(time.Millisecond)
+	}
+	if len(messages) > 0 {
+		t.Fatal(messages[0])
+		return
 	}
 	t.Fatal("condition was never met")
 }

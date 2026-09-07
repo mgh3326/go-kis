@@ -127,6 +127,8 @@ func (t *fakeTransport) sentControls() []control {
 	return slices.Clone(t.controls)
 }
 
+func (t *fakeTransport) queued() int { return len(t.in) }
+
 // scriptedServer is a Dialer plus the server behaviour behind it.
 type scriptedServer struct {
 	mu     sync.Mutex
@@ -200,6 +202,15 @@ func (s *scriptedServer) setReply(reply func(conn *fakeTransport, request wireRe
 	s.mu.Lock()
 	s.reply = reply
 	s.mu.Unlock()
+}
+
+func (s *scriptedServer) latestConn() *fakeTransport {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.conns) == 0 {
+		return nil
+	}
+	return s.conns[len(s.conns)-1]
 }
 
 // okAck builds a successful acknowledgement, optionally carrying material.

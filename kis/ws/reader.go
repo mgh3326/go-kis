@@ -210,7 +210,7 @@ func (c *Conn) publish(frame realtimeFrame, raw []byte) {
 		ReceivedAt: c.clock.Now(),
 	}
 	if IsExecution(frame.TR) {
-		event.Execution = parseExecution(fields)
+		event.Execution, event.ExecutionErr = parseExecution(fields)
 	}
 	select {
 	case c.events <- event:
