@@ -71,3 +71,113 @@ hold that emits each pair of events in reverse arrival order.
 ```
 
 Reverted; `git status --short` empty.
+
+**M11 — reconnect hook notified before resubscriptions** (`kis/ws/reconnect.go:135`)
+
+`c.notify(ReconnectInfo{...})` after the resubscribe loop → the same notify
+call before the loop. This moves the callback ahead of the restore ACKs, which
+would let a consumer observe an incomplete subscription set.
+
+`TestReconnectResubscribesInOrder` FAILED by assertion:
+
+```
+=== RUN   TestReconnectResubscribesInOrder
+    reconnect_test.go:64: frames visible inside OnReconnect = 0, want 3: hook ran before resubscriptions completed
+--- FAIL: TestReconnectResubscribesInOrder (0.00s)
+FAIL
+FAIL	github.com/mgh3326/go-kis/kis/ws	0.454s
+```
+
+Reverted; `git status --short` empty.
+
+**M12 — decryption material stored under one fixed transaction key** (`kis/ws/reader.go:231`)
+
+`c.material[tr] = material` → `c.material["*"] = material`. This makes a
+valid ACK's material unreachable through its transaction ID, so the VTS
+execution frame is discarded instead of decrypted.
+
+`TestExecutionMaterialIsolatedByTransaction` FAILED by assertion:
+
+```
+=== RUN   TestExecutionMaterialIsolatedByTransaction
+    execution_test.go:142: no event arrived; stats={DroppedFrames:1 LastDropTR:H0STCNI9 LastDropReason:no decryption material}
+--- FAIL: TestExecutionMaterialIsolatedByTransaction (3.00s)
+FAIL
+FAIL	github.com/mgh3326/go-kis/kis/ws	3.452s
+```
+
+Reverted; `git status --short` empty.
+
+**M13 — decryption material lookup returns an arbitrary transaction's entry** (`kis/ws/reader.go:238`)
+
+`material, ok := c.material[tr]; return material, ok` → return the first
+material encountered while ranging over `c.material`. A frame's transaction
+label can then select the wrong AES key/iv.
+
+`TestExecutionMaterialIsolatedByTransaction` FAILED by assertion:
+
+```
+=== RUN   TestExecutionMaterialIsolatedByTransaction
+    execution_test.go:142: no event arrived; stats={DroppedFrames:1 LastDropTR:H0STCNI9 LastDropReason:ws: encrypted payload is not decryptable}
+--- FAIL: TestExecutionMaterialIsolatedByTransaction (3.00s)
+FAIL
+FAIL	github.com/mgh3326/go-kis/kis/ws	3.467s
+```
+
+Reverted; `git status --short` empty.
+
+**M14 — execution field-count guard accepts extra fields** (`kis/ws/execution.go:103`)
+
+`if len(fields) != ExecutionFieldCount {` → `if len(fields) < ExecutionFieldCount {`.
+The 15-field record is then silently interpreted as a normal execution.
+
+`TestExecutionRecordWithWrongFieldCountIsRejected` FAILED by assertion:
+
+```
+=== RUN   TestExecutionRecordWithWrongFieldCountIsRejected
+=== RUN   TestExecutionRecordWithWrongFieldCountIsRejected/13-fields
+=== RUN   TestExecutionRecordWithWrongFieldCountIsRejected/15-fields
+    execution_test.go:256: Execution = &{OrderNo:0000012345 Symbol:005930 Side:sell Qty:10 Price:71000 FilledAt:091000 Filled:2}, want nil for 15 fields
+--- FAIL: TestExecutionRecordWithWrongFieldCountIsRejected (0.00s)
+    --- PASS: TestExecutionRecordWithWrongFieldCountIsRejected/13-fields (0.00s)
+    --- FAIL: TestExecutionRecordWithWrongFieldCountIsRejected/15-fields (0.00s)
+FAIL
+FAIL	github.com/mgh3326/go-kis/kis/ws	0.446s
+```
+
+Reverted; `git status --short` empty.
+
+**M15 — configured event buffer ignored in favour of the default** (`kis/ws/conn.go:176`)
+
+`buffer := cfg.EventBuffer` → `buffer := defaultEventBuffer`. The one-slot
+backpressure test can no longer observe unread frames in the fake socket.
+
+`TestEventBufferCapacityIsApplied` FAILED by assertion:
+
+```
+=== RUN   TestEventBufferCapacityIsApplied
+    conn_test.go:205: condition was never met
+--- FAIL: TestEventBufferCapacityIsApplied (3.00s)
+FAIL
+FAIL	github.com/mgh3326/go-kis/kis/ws	3.458s
+```
+
+Reverted; `git status --short` empty.
+
+**M16 — client approval provider leaks an upstream issue error** (`kis/ws/approval.go:70`)
+
+`return "", errApprovalUnavailable` → `return "", err` in `issue()`. This
+would expose the client's upstream transport detail instead of the package's
+sanitized approval failure.
+
+`TestClientProviderIssueSanitizesUpstreamError` FAILED by assertion:
+
+```
+=== RUN   TestClientProviderIssueSanitizesUpstreamError
+    internal_test.go:35: issue error = kis: transport failure (category=other, location=https://openapivts.koreainvestment.com:29443/oauth2/Approval), want errApprovalUnavailable
+--- FAIL: TestClientProviderIssueSanitizesUpstreamError (0.00s)
+FAIL
+FAIL	github.com/mgh3326/go-kis/kis/ws	0.449s
+```
+
+Reverted; `git status --short` empty.
